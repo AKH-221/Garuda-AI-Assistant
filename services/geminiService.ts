@@ -1,13 +1,10 @@
 import {
   GoogleGenAI,
-  LiveSession,
   LiveServerMessage,
   Modality,
-  Type,
-  FunctionDeclaration,
   Blob,
 } from '@google/genai';
-import { toolDeclarations } from './toolExecutor';
+import { toolDeclarations, executeTool } from './toolExecutor';
 import type { AppState } from '../types';
 
 // Audio utility functions (decode/encode)
@@ -61,57 +58,35 @@ function createPcmBlob(data: Float32Array): Blob {
   };
 }
 
+// ✅ FIXED SYSTEM PROMPT: force TOOL CALLS (no JSON-only replies)
 const SYSTEM_PROMPT = `
-You are "JARVIS", a voice-controlled AI assistant operating INSIDE A WEB BROWSER.
+You are "JARVIS", a voice-controlled assistant that operates INSIDE A WEB BROWSER.
 
-IMPORTANT SCOPE (must follow strictly):
-- You do NOT control the operating system.
-- You do NOT open desktop applications.
-- You ONLY perform actions that are possible inside a browser tab (Chrome-compatible).
-- When the user says "open Chrome", treat it as "open a website in the browser".
+Hard rules:
+- You DO NOT control the operating system.
+- For ANY action request (open site, new tab, search, scroll, back, reload, type, enter, click),
+  you MUST use the provided tools (function calls).
+- Do NOT output JSON as text. Do NOT describe tool names. Just call tools.
+- Keep spoken responses short (1–2 sentences max).
 
-Your responsibilities:
-- Listen to the user's voice command (already converted to text).
-- If the command is a browser task, respond with a SINGLE valid JSON object ONLY.
-- Do NOT include explanations, greetings, or extra text when responding with JSON.
+Available tools you must use:
+- openUrl({ url })
+- openUrlNewTab({ url })
+- searchGoogle({ query, newTab })
+- scrollPage({ direction, amount })
+- goBack({})
+- reloadPage({})
+- typeText({ text })
+- pressEnter({})
+- clickSelector({ selector })
 
-Supported browser actions (ONLY THESE):
-
-1) Open a website:
-{"action":"open_url","url":"https://example.com"}
-
-2) Search on Google:
-{"action":"search","query":"your search text"}
-
-3) Scroll the current page:
-{"action":"scroll","direction":"down","amount":800}
-{"action":"scroll","direction":"up","amount":800}
-
-4) Navigation:
-{"action":"back"}
-{"action":"reload"}
-
-Rules:
-- If the user says "open youtube", respond with:
-  {"action":"open_url","url":"https://www.youtube.com"}
-- If the user says "open instagram", respond with:
-  {"action":"open_url","url":"https://www.instagram.com"}
-- If the user says "search cats", respond with:
-  {"action":"search","query":"cats"}
-- If the request cannot be performed in a browser, politely explain in ONE sentence that it is not supported yet.
-
-Response rules:
-- For browser tasks → JSON ONLY.
-- For normal conversation → short natural language response (1–2 sentences max).
-- Never mention tools, functions, or system internals.
-
-Future note:
-- Desktop automation (opening apps, typing, clicking outside browser) is NOT enabled yet.
+Behavior:
+- "open <site>" => openUrl
+- "open <site> in new tab" => openUrlNewTab
+- "search <query>" => searchGoogle
+- "scroll down/up" => scrollPage
+- If user asks something not possible in browser automation, say 1 sentence: "I can't do that yet in the browser."
 `;
-
-// --- Tool Executor ---
-// In a real app, this would interact with the OS. Here, it's a mock.
-import { executeTool } from './toolExecutor';
 
 // --- Gemini Service ---
 export interface JarvisSession {
@@ -130,7 +105,19 @@ interface JarvisCallbacks {
 export const connectToJarvis = async (
   callbacks: JarvisCallbacks,
 ): Promise<JarvisSession> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // ✅ FIX: Vite uses import.meta.env, not process.env
+  const apiKey =
+    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any).env?.VITE_API_KEY ||
+    (process as any)?.env?.API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      'Missing API key. Set VITE_GEMINI_API_KEY in .env.local (Vite) or API_KEY in runtime.',
+    );
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
 
   const inputAudioContext = new (window.AudioContext ||
     (window as any).webkitAudioContext)({ sampleRate: 16000 });
@@ -171,13 +158,12 @@ export const connectToJarvis = async (
         };
         source.connect(scriptProcessor);
 
-        // To prevent audio feedback, the scriptProcessor is connected to a GainNode with a gain of 0.
-        // This is then connected to the destination to ensure the processing pipeline remains active.
         const gainNode = inputAudioContext.createGain();
         gainNode.gain.setValueAtTime(0, inputAudioContext.currentTime);
         scriptProcessor.connect(gainNode);
         gainNode.connect(inputAudioContext.destination);
       },
+
       onmessage: async (message: LiveServerMessage) => {
         if (message.serverContent?.inputTranscription) {
           callbacks.onUserTranscription(message.serverContent.inputTranscription.text);
@@ -189,6 +175,7 @@ export const connectToJarvis = async (
 
         const audioData =
           message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+
         if (audioData) {
           callbacks.onStateChange('SPEAKING');
           nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
@@ -212,11 +199,14 @@ export const connectToJarvis = async (
           sources.add(source);
         }
 
+        // ✅ Tool calls
         if (message.toolCall?.functionCalls) {
           callbacks.onStateChange('THINKING');
           for (const fc of message.toolCall.functionCalls) {
             callbacks.onToolCall(fc.name, fc.args);
+
             const result = await executeTool(fc.name, fc.args);
+
             const session = await sessionPromise;
             session.sendToolResponse({
               functionResponses: {
@@ -241,15 +231,13 @@ export const connectToJarvis = async (
           callbacks.onStateChange('LISTENING');
         }
       },
+
       onerror: (e: ErrorEvent) => callbacks.onError(e),
+
       onclose: async () => {
         stream.getTracks().forEach((track) => track.stop());
-        if (inputAudioContext.state !== 'closed') {
-          await inputAudioContext.close();
-        }
-        if (outputAudioContext.state !== 'closed') {
-          await outputAudioContext.close();
-        }
+        if (inputAudioContext.state !== 'closed') await inputAudioContext.close();
+        if (outputAudioContext.state !== 'closed') await outputAudioContext.close();
       },
     },
   });
@@ -257,8 +245,6 @@ export const connectToJarvis = async (
   const session = await sessionPromise;
 
   return {
-    close: () => {
-      session.close();
-    },
+    close: () => session.close(),
   };
 };

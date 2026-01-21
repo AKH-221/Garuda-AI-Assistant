@@ -1,125 +1,120 @@
-import { Type } from "@google/genai";
+import { FunctionDeclaration, Type } from '@google/genai';
 
 /**
- * Tool declarations exposed to Gemini
- * These are GENERAL browser tools (NOT YouTube-only)
+ * This project runs in the browser.
+ * Real "tab switching / guaranteed new-tab / cross-site typing & clicking"
+ * requires the Local Bridge + Chrome Extension.
+ *
+ * But we ALSO include browser-only fallback for:
+ * - openUrl, openUrlNewTab, searchGoogle, scroll, back, reload
+ * so at least URLs open even if bridge isn't reachable (ex: Vercel https mixed-content block).
  */
-export const toolDeclarations = [
+
+export const toolDeclarations: FunctionDeclaration[] = [
   {
-    name: "openUrl",
-    description: "Open a website in the current browser tab",
+    name: 'openUrl',
+    description: 'Open a website in the current browser tab.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING },
+        url: { type: Type.STRING, description: 'Full URL (https://...) or domain (example.com).' },
       },
-      required: ["url"],
+      required: ['url'],
     },
   },
   {
-    name: "openUrlNewTab",
-    description: "Open a website in a new browser tab",
+    name: 'openUrlNewTab',
+    description: 'Open a website in a NEW browser tab.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING },
+        url: { type: Type.STRING, description: 'Full URL (https://...) or domain (example.com).' },
       },
-      required: ["url"],
+      required: ['url'],
     },
   },
   {
-    name: "scrollPage",
-    description: "Scroll the current page",
+    name: 'searchGoogle',
+    description: 'Search Google for a query (opens results in current tab unless user asked new tab).',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        direction: { type: Type.STRING, enum: ["up", "down"] },
-        amount: { type: Type.NUMBER },
+        query: { type: Type.STRING, description: 'Search query text.' },
+        newTab: { type: Type.BOOLEAN, description: 'If true, open search results in a new tab.' },
       },
-      required: ["direction"],
+      required: ['query'],
     },
   },
-  { name: "goBack", description: "Go back in browser history", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "reloadPage", description: "Reload the current page", parameters: { type: Type.OBJECT, properties: {} } },
   {
-    name: "typeText",
-    description: "Type text into the currently focused input",
+    name: 'scrollPage',
+    description: 'Scroll the current page up or down.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        text: { type: Type.STRING },
+        direction: { type: Type.STRING, enum: ['up', 'down'] },
+        amount: { type: Type.NUMBER, description: 'Pixels to scroll (default 800).' },
       },
-      required: ["text"],
+      required: ['direction'],
     },
   },
-  { name: "pressEnter", description: "Press Enter key", parameters: { type: Type.OBJECT, properties: {} } },
   {
-    name: "clickSelector",
-    description: "Click an element using a CSS selector",
+    name: 'goBack',
+    description: 'Go back in browser history.',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'reloadPage',
+    description: 'Reload the current page.',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'typeText',
+    description: 'Type text into the active input field (works best via Chrome Extension).',
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        selector: { type: Type.STRING },
-      },
-      required: ["selector"],
+      properties: { text: { type: Type.STRING } },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'pressEnter',
+    description: 'Press Enter key (works best via Chrome Extension).',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'clickSelector',
+    description: 'Click an element using a CSS selector (works best via Chrome Extension).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: { selector: { type: Type.STRING } },
+      required: ['selector'],
     },
   },
 ];
 
-/**
- * Sends commands to LOCAL BRIDGE → Chrome Extension
- */
-async function sendToBridge(payload: any) {
-  await fetch("http://localhost:4545/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+function normalizeUrl(input: string): string {
+  let url = (input || '').trim();
+  if (!url) return '';
+  // If user says "youtube" or "youtube.com"
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
+  }
+  return url;
 }
 
-/**
- * Executes tool calls from Gemini
- */
-export async function executeTool(name: string, args: any) {
-  switch (name) {
-    case "openUrl":
-      await sendToBridge({ cmd: "open_url", url: args.url });
-      return { ok: true };
-
-    case "openUrlNewTab":
-      await sendToBridge({ cmd: "new_tab", url: args.url });
-      return { ok: true };
-
-    case "scrollPage":
-      await sendToBridge({
-        cmd: "scroll",
-        direction: args.direction,
-        amount: args.amount ?? 800,
-      });
-      return { ok: true };
-
-    case "goBack":
-      await sendToBridge({ cmd: "go_back" });
-      return { ok: true };
-
-    case "reloadPage":
-      await sendToBridge({ cmd: "reload" });
-      return { ok: true };
-
-    case "typeText":
-      await sendToBridge({ cmd: "type", text: args.text });
-      return { ok: true };
-
-    case "pressEnter":
-      await sendToBridge({ cmd: "press_enter" });
-      return { ok: true };
-
-    case "clickSelector":
-      await sendToBridge({ cmd: "click", selector: args.selector });
-      return { ok: true };
-
-    default:
-      console.warn("Unknown tool:", name, args);
-      return { ok: false };
+async function sendToBridge(payload: any): Promise<boolean> {
+  try {
+    await fetch('http://localhost:4545/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return true;
+  } catch (e) {
+    console.warn('Bridge not reachable (localhost:4545). Using browser fallback when possible.', e);
+    return false;
   }
 }
+
+export const executeTool = async (toolName: string, args: any) => {
+  console.log(`Executing tool: ${toolN
