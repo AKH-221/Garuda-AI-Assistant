@@ -92,7 +92,7 @@ const App: React.FC = () => {
         
         <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
             <TranscriptionLog messages={messages} />
-            <ToolCallLog toolCalls={toolCalls} />
+            <ToolCallLog toolCalls={toolCalls} />asdfa
         </div>
         
         <footer className="text-gray-600 text-xs mt-12">
