@@ -19,3 +19,4 @@ View your app in AI Studio: https://ai.studio/apps/drive/1T_Lv9RCvEZ-Zf3bv-6V-Qr
 3. Run the app:
    `npm run dev`
 "# Garuda-AI-Assistant" 
+# Garuda-AI-Assistant
