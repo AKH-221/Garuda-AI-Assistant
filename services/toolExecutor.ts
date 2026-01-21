@@ -1,8 +1,8 @@
 import { Type } from "@google/genai";
 
 /**
- * Tool declarations
- * These tell Gemini WHAT browser actions it is allowed to call
+ * Tool declarations exposed to Gemini
+ * These are GENERAL browser tools (NOT YouTube-only)
  */
 export const toolDeclarations = [
   {
@@ -11,26 +11,20 @@ export const toolDeclarations = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: {
-          type: Type.STRING,
-          description: "Website URL to open",
-        },
+        url: { type: Type.STRING },
       },
       required: ["url"],
     },
   },
   {
-    name: "searchGoogle",
-    description: "Search something on Google in the current browser tab",
+    name: "openUrlNewTab",
+    description: "Open a website in a new browser tab",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        query: {
-          type: Type.STRING,
-          description: "Search query",
-        },
+        url: { type: Type.STRING },
       },
-      required: ["query"],
+      required: ["url"],
     },
   },
   {
@@ -39,90 +33,93 @@ export const toolDeclarations = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        direction: {
-          type: Type.STRING,
-          enum: ["up", "down"],
-        },
-        amount: {
-          type: Type.NUMBER,
-          description: "Scroll amount in pixels",
-        },
+        direction: { type: Type.STRING, enum: ["up", "down"] },
+        amount: { type: Type.NUMBER },
       },
       required: ["direction"],
     },
   },
+  { name: "goBack", description: "Go back in browser history", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "reloadPage", description: "Reload the current page", parameters: { type: Type.OBJECT, properties: {} } },
   {
-    name: "goBack",
-    description: "Go back in browser history",
+    name: "typeText",
+    description: "Type text into the currently focused input",
     parameters: {
       type: Type.OBJECT,
-      properties: {},
+      properties: {
+        text: { type: Type.STRING },
+      },
+      required: ["text"],
     },
   },
+  { name: "pressEnter", description: "Press Enter key", parameters: { type: Type.OBJECT, properties: {} } },
   {
-    name: "reloadPage",
-    description: "Reload the current page",
+    name: "clickSelector",
+    description: "Click an element using a CSS selector",
     parameters: {
       type: Type.OBJECT,
-      properties: {},
+      properties: {
+        selector: { type: Type.STRING },
+      },
+      required: ["selector"],
     },
   },
 ];
 
 /**
- * Tool executor
- * This actually performs the browser actions
+ * Sends commands to LOCAL BRIDGE → Chrome Extension
+ */
+async function sendToBridge(payload: any) {
+  await fetch("http://localhost:4545/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * Executes tool calls from Gemini
  */
 export async function executeTool(name: string, args: any) {
   switch (name) {
-    case "openUrl": {
-      let url = String(args?.url || "").trim();
-      if (!url) return { ok: false, error: "Missing URL" };
-
-      // Auto-fix URL
-      if (!url.startsWith("http")) {
-        url = "https://" + url;
-      }
-
-      window.location.href = url;
+    case "openUrl":
+      await sendToBridge({ cmd: "open_url", url: args.url });
       return { ok: true };
-    }
 
-    case "searchGoogle": {
-      const query = String(args?.query || "").trim();
-      if (!query) return { ok: false, error: "Missing query" };
-
-      window.location.href =
-        "https://www.google.com/search?q=" +
-        encodeURIComponent(query);
-
+    case "openUrlNewTab":
+      await sendToBridge({ cmd: "new_tab", url: args.url });
       return { ok: true };
-    }
 
-    case "scrollPage": {
-      const direction = args?.direction === "up" ? -1 : 1;
-      const amount =
-        typeof args?.amount === "number" ? args.amount : 800;
-
-      window.scrollBy({
-        top: direction * amount,
-        left: 0,
-        behavior: "smooth",
+    case "scrollPage":
+      await sendToBridge({
+        cmd: "scroll",
+        direction: args.direction,
+        amount: args.amount ?? 800,
       });
-
       return { ok: true };
-    }
 
     case "goBack":
-      window.history.back();
+      await sendToBridge({ cmd: "go_back" });
       return { ok: true };
 
     case "reloadPage":
-      window.location.reload();
+      await sendToBridge({ cmd: "reload" });
+      return { ok: true };
+
+    case "typeText":
+      await sendToBridge({ cmd: "type", text: args.text });
+      return { ok: true };
+
+    case "pressEnter":
+      await sendToBridge({ cmd: "press_enter" });
+      return { ok: true };
+
+    case "clickSelector":
+      await sendToBridge({ cmd: "click", selector: args.selector });
       return { ok: true };
 
     default:
       console.warn("Unknown tool:", name, args);
-      return { ok: false, error: "Unknown tool" };
+      return { ok: false };
   }
 }

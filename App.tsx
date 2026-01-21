@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback } from 'react';
 import { connectToJarvis, JarvisSession } from './services/geminiService';
 import type { Message, AppState } from './types';
@@ -11,7 +10,7 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolCalls, setToolCalls] = useState<string[]>([]);
-  
+
   const sessionRef = useRef<JarvisSession | null>(null);
   const userTranscriptionRef = useRef('');
   const jarvisTranscriptionRef = useRef('');
@@ -23,7 +22,7 @@ const App: React.FC = () => {
   }, []);
 
   const addToolCall = useCallback((toolCallString: string) => {
-    setToolCalls(prev => [...prev.slice(-4), toolCallString]);
+    setToolCalls(prev => [...prev.slice(-6), toolCallString]);
   }, []);
 
   const handleToggleSession = async () => {
@@ -38,37 +37,42 @@ const App: React.FC = () => {
 
     try {
       setAppState('CONNECTING');
+
       const session = await connectToJarvis({
         onStateChange: setAppState,
+
         onUserTranscription: (text) => {
           userTranscriptionRef.current += text;
         },
+
         onJarvisTranscription: (text) => {
           jarvisTranscriptionRef.current += text;
         },
+
         onTurnComplete: () => {
           addMessage('user', userTranscriptionRef.current);
           addMessage('jarvis', jarvisTranscriptionRef.current);
           userTranscriptionRef.current = '';
           jarvisTranscriptionRef.current = '';
         },
+
         onToolCall: (toolName, args) => {
-            const argsString = JSON.stringify(args, null, 2);
-            addToolCall(`Executing: ${toolName}(${argsString})`);
+          addToolCall(`🛠 ${toolName} → ${JSON.stringify(args)}`);
         },
+
         onError: (error) => {
-            console.error("Session Error:", error);
-            addMessage('jarvis', `An error occurred: ${error.message || 'Unknown error'}. Please try again.`);
-            setAppState('IDLE');
-            sessionRef.current = null;
+          console.error("Session Error:", error);
+          addMessage('jarvis', "An error occurred. Please try again.");
+          setAppState('IDLE');
+          sessionRef.current = null;
         },
       });
+
       sessionRef.current = session;
     } catch (error) {
       console.error('Failed to start session:', error);
       setAppState('IDLE');
-      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred.';
-      addMessage('jarvis', `Failed to start session: ${errorMessage}`);
+      addMessage('jarvis', "Failed to start session.");
     }
   };
 
@@ -78,26 +82,26 @@ const App: React.FC = () => {
         <h1 className="text-5xl md:text-6xl font-extralight text-cyan-300 tracking-wider mb-2">
           J.A.R.V.I.S
         </h1>
-        <p className="text-gray-400 mb-8">Voice-Controlled Desktop Assistant</p>
-        
+        <p className="text-gray-400 mb-8">Full Browser Automation Assistant</p>
+
         <div className="w-full h-64 md:h-80 flex items-center justify-center mb-8">
-            <Visualizer state={appState} />
+          <Visualizer state={appState} />
         </div>
 
-        <Controls 
-            isSessionActive={appState !== 'IDLE' && appState !== 'CONNECTING'} 
-            isLoading={appState === 'CONNECTING'}
-            onToggle={handleToggleSession} 
+        <Controls
+          isSessionActive={appState !== 'IDLE' && appState !== 'CONNECTING'}
+          isLoading={appState === 'CONNECTING'}
+          onToggle={handleToggleSession}
         />
-        
+
         <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
-            <TranscriptionLog messages={messages} />
-            <ToolCallLog toolCalls={toolCalls} />
+          <TranscriptionLog messages={messages} />
+          <ToolCallLog toolCalls={toolCalls} />
         </div>
-        
-        <footer className="text-gray-600 text-xs mt-12">
-            <p>Safety First: JARVIS will always ask for confirmation before performing irreversible actions.</p>
-            <p>This is a simulation. Tool calls are logged but not executed on your OS.</p>
+
+        <footer className="text-gray-600 text-xs mt-12 text-center">
+          <p>JARVIS operates inside your browser via a Chrome Extension.</p>
+          <p>All actions are executed locally for security.</p>
         </footer>
       </div>
     </div>
