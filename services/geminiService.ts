@@ -1,209 +1,210 @@
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
-import { toolDeclarations, executeTool } from './toolExecutor';
-import type { AppState } from '../types';
+import { FunctionDeclaration, Type } from '@google/genai';
 
-// Audio utility functions (decode/encode)
-function decode(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+/**
+ * Tool declarations exposed to Gemini
+ * General browser automation (all sites).
+ */
+export const toolDeclarations: FunctionDeclaration[] = [
+  {
+    name: 'openUrl',
+    description: 'Open a website in the current browser tab.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: 'Full URL or domain (e.g., youtube.com).' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'openUrlNewTab',
+    description: 'Open a website in a new browser tab.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: 'Full URL or domain.' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'searchGoogle',
+    description: 'Search on Google for a query.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: 'Search query.' },
+        newTab: { type: Type.BOOLEAN, description: 'Open results in a new tab if true.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'scrollPage',
+    description: 'Scroll the current page.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        direction: { type: Type.STRING, enum: ['up', 'down'] },
+        amount: { type: Type.NUMBER, description: 'Pixels to scroll (default 800).' },
+      },
+      required: ['direction'],
+    },
+  },
+  { name: 'goBack', description: 'Go back in browser history.', parameters: { type: Type.OBJECT, properties: {} } },
+  { name: 'reloadPage', description: 'Reload the current page.', parameters: { type: Type.OBJECT, properties: {} } },
+  {
+    name: 'typeText',
+    description: 'Type text into the active input (best with extension).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: { text: { type: Type.STRING } },
+      required: ['text'],
+    },
+  },
+  { name: 'pressEnter', description: 'Press Enter key (best with extension).', parameters: { type: Type.OBJECT, properties: {} } },
+  {
+    name: 'clickSelector',
+    description: 'Click an element by CSS selector (best with extension).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: { selector: { type: Type.STRING } },
+      required: ['selector'],
+    },
+  },
+];
+
+function normalizeUrl(input: string): string {
+  let url = (input || '').trim();
+  if (!url) return '';
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
   }
-  return bytes;
+  return url;
 }
 
-function encode(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+async function sendToBridge(payload: any): Promise<boolean> {
+  try {
+    await fetch('http://localhost:4545/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return true;
+  } catch (e) {
+    console.warn('Bridge not reachable (localhost:4545). Using browser fallback when possible.', e);
+    return false;
   }
-  return btoa(binary);
 }
 
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+export const executeTool = async (toolName: string, args: any) => {
+  console.log(`Executing tool: ${toolName}`, args);
 
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+  switch (toolName) {
+    case 'openUrl': {
+      const url = normalizeUrl(String(args?.url || ''));
+      if (!url) return { success: false, message: 'Missing url' };
+
+      const ok = await sendToBridge({ cmd: 'open_url', url });
+      if (!ok) window.location.href = url;
+
+      return { success: true, message: `Opening ${url}` };
     }
+
+    case 'openUrlNewTab': {
+      const url = normalizeUrl(String(args?.url || ''));
+      if (!url) return { success: false, message: 'Missing url' };
+
+      const ok = await sendToBridge({ cmd: 'new_tab', url });
+      if (!ok) window.open(url, '_blank', 'noopener,noreferrer');
+
+      return { success: true, message: `Opening in new tab: ${url}` };
+    }
+
+    case 'searchGoogle': {
+      const query = String(args?.query || '').trim();
+      if (!query) return { success: false, message: 'Missing query' };
+
+      const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+      const newTab = Boolean(args?.newTab);
+
+      const ok = await sendToBridge({ cmd: newTab ? 'new_tab' : 'open_url', url });
+
+      if (!ok) {
+        if (newTab) window.open(url, '_blank', 'noopener,noreferrer');
+        else window.location.href = url;
+      }
+
+      return { success: true, message: `Searching Google for: ${query}` };
+    }
+
+    case 'scrollPage': {
+      const direction = args?.direction === 'up' ? 'up' : 'down';
+      const amount = typeof args?.amount === 'number' ? args.amount : 800;
+
+      const ok = await sendToBridge({ cmd: 'scroll', direction, amount });
+
+      if (!ok) {
+        const dir = direction === 'up' ? -1 : 1;
+        window.scrollBy({ top: dir * amount, left: 0, behavior: 'smooth' });
+      }
+
+      return { success: true, message: `Scrolling ${direction}` };
+    }
+
+    case 'goBack': {
+      const ok = await sendToBridge({ cmd: 'go_back' });
+      if (!ok) window.history.back();
+      return { success: true, message: 'Going back' };
+    }
+
+    case 'reloadPage': {
+      const ok = await sendToBridge({ cmd: 'reload' });
+      if (!ok) window.location.reload();
+      return { success: true, message: 'Reloading page' };
+    }
+
+    case 'typeText': {
+      const text = String(args?.text ?? '');
+      const ok = await sendToBridge({ cmd: 'type', text });
+
+      if (!ok) {
+        const el = document.activeElement as any;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+          el.value = text;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      return { success: true, message: 'Typed text' };
+    }
+
+    case 'pressEnter': {
+      const ok = await sendToBridge({ cmd: 'press_enter' });
+
+      if (!ok) {
+        const el = document.activeElement as HTMLElement | null;
+        if (el) {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+        }
+      }
+      return { success: true, message: 'Pressed Enter' };
+    }
+
+    case 'clickSelector': {
+      const selector = String(args?.selector || '').trim();
+      if (!selector) return { success: false, message: 'Missing selector' };
+
+      const ok = await sendToBridge({ cmd: 'click', selector });
+
+      if (!ok) {
+        const el = document.querySelector(selector) as HTMLElement | null;
+        if (el) el.click();
+      }
+      return { success: true, message: `Clicked ${selector}` };
+    }
+
+    default:
+      return { success: false, message: `Unknown tool: ${toolName}` };
   }
-  return buffer;
-}
-
-function createPcmBlob(data: Float32Array): Blob {
-  const l = data.length;
-  const int16 = new Int16Array(l);
-  for (let i = 0; i < l; i++) {
-    int16[i] = data[i] * 32768;
-  }
-  return {
-    data: encode(new Uint8Array(int16.buffer)),
-    mimeType: 'audio/pcm;rate=16000',
-  };
-}
-
-// ✅ IMPORTANT: Force Gemini to CALL TOOLS for actions (not JSON text)
-const SYSTEM_PROMPT = `
-You are "JARVIS", a voice assistant operating INSIDE A WEB BROWSER.
-
-Hard rules:
-- For ANY browser action (open site, new tab, search, scroll, back, reload, type, enter, click),
-  you MUST use the provided tools (function calls).
-- Do NOT output JSON as plain text.
-- Keep spoken responses 1–2 short sentences.
-
-Tools available:
-- openUrl({ url })
-- openUrlNewTab({ url })
-- searchGoogle({ query })
-- scrollPage({ direction, amount })
-- goBack({})
-- reloadPage({})
-- typeText({ text })
-- pressEnter({})
-- clickSelector({ selector })
-`;
-
-export interface JarvisSession {
-  close: () => void;
-}
-
-interface JarvisCallbacks {
-  onStateChange: (state: AppState) => void;
-  onUserTranscription: (text: string) => void;
-  onJarvisTranscription: (text: string) => void;
-  onTurnComplete: () => void;
-  onToolCall: (toolName: string, args: any) => void;
-  onError: (error: ErrorEvent | Error) => void;
-}
-
-export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<JarvisSession> => {
-  // ✅ Vite frontend env var
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY (set it in Vercel + .env.local)');
-
-  const ai = new GoogleGenAI({ apiKey });
-
-  const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-  const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-  const sources = new Set<AudioBufferSourceNode>();
-  let nextStartTime = 0;
-
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  callbacks.onStateChange('LISTENING');
-
-  const sessionPromise = ai.live.connect({
-    model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
-      systemInstruction: SYSTEM_PROMPT,
-      tools: [{ functionDeclarations: toolDeclarations }],
-    },
-    callbacks: {
-      onopen: () => {
-        const source = inputAudioContext.createMediaStreamSource(stream);
-        const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
-
-        scriptProcessor.onaudioprocess = (event) => {
-          const inputData = event.inputBuffer.getChannelData(0);
-          const pcmBlob = createPcmBlob(inputData);
-          sessionPromise.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
-        };
-
-        source.connect(scriptProcessor);
-
-        // keep pipeline alive without audio feedback
-        const gainNode = inputAudioContext.createGain();
-        gainNode.gain.setValueAtTime(0, inputAudioContext.currentTime);
-        scriptProcessor.connect(gainNode);
-        gainNode.connect(inputAudioContext.destination);
-      },
-
-      onmessage: async (message: LiveServerMessage) => {
-        if (message.serverContent?.inputTranscription) {
-          callbacks.onUserTranscription(message.serverContent.inputTranscription.text);
-        }
-
-        if (message.serverContent?.outputTranscription) {
-          callbacks.onJarvisTranscription(message.serverContent.outputTranscription.text);
-        }
-
-        const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-        if (audioData) {
-          callbacks.onStateChange('SPEAKING');
-          nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
-
-          const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
-          const source = outputAudioContext.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(outputAudioContext.destination);
-
-          source.addEventListener('ended', () => {
-            sources.delete(source);
-            if (sources.size === 0) callbacks.onStateChange('LISTENING');
-          });
-
-          source.start(nextStartTime);
-          nextStartTime += audioBuffer.duration;
-          sources.add(source);
-        }
-
-        // ✅ tool calls
-        if (message.toolCall?.functionCalls) {
-          callbacks.onStateChange('THINKING');
-          for (const fc of message.toolCall.functionCalls) {
-            callbacks.onToolCall(fc.name, fc.args);
-            const result = await executeTool(fc.name, fc.args);
-
-            const session = await sessionPromise;
-            session.sendToolResponse({
-              functionResponses: {
-                id: fc.id,
-                name: fc.name,
-                response: { result: JSON.stringify(result) },
-              },
-            });
-          }
-        }
-
-        if (message.serverContent?.turnComplete) callbacks.onTurnComplete();
-
-        if (message.serverContent?.interrupted) {
-          for (const s of sources.values()) {
-            s.stop();
-            sources.delete(s);
-          }
-          nextStartTime = 0;
-          callbacks.onStateChange('LISTENING');
-        }
-      },
-
-      onerror: (e: ErrorEvent) => callbacks.onError(e),
-      onclose: async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        if (inputAudioContext.state !== 'closed') await inputAudioContext.close();
-        if (outputAudioContext.state !== 'closed') await outputAudioContext.close();
-      },
-    },
-  });
-
-  const session = await sessionPromise;
-
-  return {
-    close: () => session.close(),
-  };
 };
