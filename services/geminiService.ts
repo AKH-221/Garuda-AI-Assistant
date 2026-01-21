@@ -4,7 +4,9 @@ import type { AppState } from '../types';
 
 type RealtimeBlob = { data: string; mimeType: string };
 
-// Audio utility functions
+// -------------------------
+// Audio helpers
+// -------------------------
 function decode(base64: string): Uint8Array {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -45,27 +47,56 @@ function createPcmBlob(data: Float32Array): RealtimeBlob {
   return { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
 }
 
+// -------------------------
+// ✅ SYSTEM PROMPT (FULL AUTOMATION)
+// -------------------------
 const SYSTEM_PROMPT = `
-You are "JARVIS", a voice assistant operating INSIDE A WEB BROWSER.
+You are "JARVIS", a full browser automation voice assistant.
 
-Hard rules:
-- For ANY browser action (open site, new tab, search, scroll, back, reload, type, enter, click),
-  you MUST use the provided tools (function calls).
+CRITICAL RULES:
+- If the user asks for ANY action, you MUST call the tools (function calls). Never just describe.
 - Do NOT output JSON as plain text.
-- Keep spoken responses 1–2 short sentences.
+- Keep spoken responses short (1–2 sentences).
+- You operate only inside the browser (tabs + websites). OS-level control is not available.
 
-Tools:
+TOOLS YOU MUST USE:
 - openUrl({ url })
 - openUrlNewTab({ url })
 - searchGoogle({ query, newTab })
+- youtubeSearch({ query, newTab })
+- switchTab({ number })
+- closeTab({})
+- closeTabByNumber({ number })
+- closeOtherTabs({})
+- closeAllTabs({})
 - scrollPage({ direction, amount })
 - goBack({})
 - reloadPage({})
 - typeText({ text })
 - pressEnter({})
 - clickSelector({ selector })
+
+BEHAVIOR RULES:
+- "open youtube" -> openUrlNewTab({url:"https://youtube.com"}) unless user says same tab.
+- "open <site>" -> openUrl or openUrlNewTab (if user says new tab).
+- "search <query> on google" -> searchGoogle({query, newTab:true}) unless user says same tab.
+- "open youtube and search <song>" OR "play <song> on youtube" -> youtubeSearch({query:"<song>", newTab:true})
+- "switch to tab 3" -> switchTab({number:3})
+- "close this tab" -> closeTab({})
+- "close tab 2" -> closeTabByNumber({number:2})
+- "close other tabs" -> closeOtherTabs({})
+- "close all tabs" -> closeAllTabs({})
+- "scroll down/up" -> scrollPage({direction:"down/up", amount:800})
+
+CONFIRMATION SAFETY:
+- If user asks "close all tabs" or "close other tabs" and it might lose work, ask:
+  "This may close tabs with unsaved work. Do you want me to proceed?"
+  Wait for yes before calling the close tools.
 `;
 
+// -------------------------
+// Public types
+// -------------------------
 export interface JarvisSession {
   close: () => void;
 }
@@ -79,15 +110,19 @@ interface JarvisCallbacks {
   onError: (error: ErrorEvent | Error) => void;
 }
 
-// ✅ THIS MUST BE EXPORTED (your build error)
+// -------------------------
+// ✅ Connect to Jarvis (Gemini Live Audio)
+// -------------------------
 export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<JarvisSession> => {
+  // ✅ Vite client env (MUST start with VITE_)
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY');
+  if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY in .env.local / Vercel env vars');
 
   const ai = new GoogleGenAI({ apiKey });
 
   const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
   const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+
   const sources = new Set<AudioBufferSourceNode>();
   let nextStartTime = 0;
 
@@ -117,6 +152,7 @@ export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<Jarvi
 
         source.connect(scriptProcessor);
 
+        // keep audio pipeline alive without feedback
         const gainNode = inputAudioContext.createGain();
         gainNode.gain.setValueAtTime(0, inputAudioContext.currentTime);
         scriptProcessor.connect(gainNode);
@@ -124,13 +160,17 @@ export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<Jarvi
       },
 
       onmessage: async (message: LiveServerMessage) => {
+        // user transcript
         if (message.serverContent?.inputTranscription) {
           callbacks.onUserTranscription(message.serverContent.inputTranscription.text);
         }
+
+        // jarvis transcript
         if (message.serverContent?.outputTranscription) {
           callbacks.onJarvisTranscription(message.serverContent.outputTranscription.text);
         }
 
+        // audio output
         const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
         if (audioData) {
           callbacks.onStateChange('SPEAKING');
@@ -151,10 +191,13 @@ export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<Jarvi
           sources.add(src);
         }
 
+        // tool calls
         if (message.toolCall?.functionCalls) {
           callbacks.onStateChange('THINKING');
+
           for (const fc of message.toolCall.functionCalls) {
             callbacks.onToolCall(fc.name, fc.args);
+
             const result = await executeTool(fc.name, fc.args);
 
             const session = await sessionPromise;
