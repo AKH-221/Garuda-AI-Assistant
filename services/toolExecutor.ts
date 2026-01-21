@@ -1,197 +1,126 @@
-/**
- * IMPORTANT:
- * - Do NOT import FunctionDeclaration/Type from '@google/genai' in Vite build.
- * - Use plain JSON schema strings instead.
- * - This file is browser-safe.
- */
+import { Type } from "@google/genai";
 
+/**
+ * Tool declarations
+ * These tell Gemini WHAT actions it is allowed to call
+ */
 export const toolDeclarations = [
   {
-    name: 'openUrl',
-    description: 'Open a website in the current browser tab.',
+    name: "openUrl",
+    description: "Open a website in the current browser tab",
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
-        url: { type: 'string', description: 'Full URL or domain (example.com)' },
+        url: {
+          type: Type.STRING,
+          description: "Website URL to open",
+        },
       },
-      required: ['url'],
+      required: ["url"],
     },
   },
   {
-    name: 'openUrlNewTab',
-    description: 'Open a website in a new browser tab.',
+    name: "searchGoogle",
+    description: "Search something on Google",
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
-        url: { type: 'string', description: 'Full URL or domain (example.com)' },
+        query: {
+          type: Type.STRING,
+          description: "Search query",
+        },
       },
-      required: ['url'],
+      required: ["query"],
     },
   },
   {
-    name: 'searchGoogle',
-    description: 'Search on Google for a query.',
+    name: "scrollPage",
+    description: "Scroll the current page",
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
-        query: { type: 'string', description: 'Search query' },
-        newTab: { type: 'boolean', description: 'Open results in a new tab' },
+        direction: {
+          type: Type.STRING,
+          enum: ["up", "down"],
+        },
+        amount: {
+          type: Type.NUMBER,
+          description: "Scroll amount in pixels",
+        },
       },
-      required: ['query'],
+      required: ["direction"],
     },
   },
   {
-    name: 'scrollPage',
-    description: 'Scroll the current page.',
+    name: "goBack",
+    description: "Go back in browser history",
     parameters: {
-      type: 'object',
-      properties: {
-        direction: { type: 'string', enum: ['up', 'down'] },
-        amount: { type: 'number', description: 'Pixels to scroll (default 800)' },
-      },
-      required: ['direction'],
+      type: Type.OBJECT,
+      properties: {},
     },
   },
-  { name: 'goBack', description: 'Go back in browser history.', parameters: { type: 'object', properties: {} } },
-  { name: 'reloadPage', description: 'Reload the current page.', parameters: { type: 'object', properties: {} } },
   {
-    name: 'typeText',
-    description: 'Type text into active input (best via extension).',
+    name: "reloadPage",
+    description: "Reload the current page",
     parameters: {
-      type: 'object',
-      properties: { text: { type: 'string' } },
-      required: ['text'],
-    },
-  },
-  { name: 'pressEnter', description: 'Press Enter key (best via extension).', parameters: { type: 'object', properties: {} } },
-  {
-    name: 'clickSelector',
-    description: 'Click an element by CSS selector (best via extension).',
-    parameters: {
-      type: 'object',
-      properties: { selector: { type: 'string' } },
-      required: ['selector'],
+      type: Type.OBJECT,
+      properties: {},
     },
   },
 ];
 
-function normalizeUrl(input: string): string {
-  let url = (input || '').trim();
-  if (!url) return '';
-  if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
-  return url;
-}
-
 /**
- * Bridge -> Chrome Extension (optional).
- * On Vercel/HTTPS, calling http://localhost can fail (mixed content).
- * So we try bridge, and fallback to normal browser navigation when possible.
+ * Tool executor
+ * This actually performs the browser actions
  */
-async function sendToBridge(payload: any): Promise<boolean> {
-  try {
-    await fetch('http://localhost:4545/command', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
+export async function executeTool(name: string, args: any) {
+  switch (name) {
+    case "openUrl": {
+      let url = String(args?.url || "").trim();
+      if (!url) return { ok: false };
 
-export const executeTool = async (toolName: string, args: any) => {
-  switch (toolName) {
-    case 'openUrl': {
-      const url = normalizeUrl(String(args?.url || ''));
-      if (!url) return { success: false, message: 'Missing url' };
-      const ok = await sendToBridge({ cmd: 'open_url', url });
-      if (!ok) window.location.href = url;
-      return { success: true };
-    }
-
-    case 'openUrlNewTab': {
-      const url = normalizeUrl(String(args?.url || ''));
-      if (!url) return { success: false, message: 'Missing url' };
-      const ok = await sendToBridge({ cmd: 'new_tab', url });
-      if (!ok) window.open(url, '_blank', 'noopener,noreferrer');
-      return { success: true };
-    }
-
-    case 'searchGoogle': {
-      const query = String(args?.query || '').trim();
-      if (!query) return { success: false, message: 'Missing query' };
-      const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-      const newTab = Boolean(args?.newTab);
-      const ok = await sendToBridge({ cmd: newTab ? 'new_tab' : 'open_url', url });
-      if (!ok) {
-        if (newTab) window.open(url, '_blank', 'noopener,noreferrer');
-        else window.location.href = url;
+      if (!url.startsWith("http")) {
+        url = "https://" + url;
       }
-      return { success: true };
+
+      window.location.href = url;
+      return { ok: true };
     }
 
-    case 'scrollPage': {
-      const direction = args?.direction === 'up' ? 'up' : 'down';
-      const amount = typeof args?.amount === 'number' ? args.amount : 800;
+    case "searchGoogle": {
+      const q = String(args?.query || "").trim();
+      if (!q) return { ok: false };
 
-      const ok = await sendToBridge({ cmd: 'scroll', direction, amount });
-      if (!ok) {
-        const dir = direction === 'up' ? -1 : 1;
-        window.scrollBy({ top: dir * amount, left: 0, behavior: 'smooth' });
-      }
-      return { success: true };
+      window.location.href =
+        "https://www.google.com/search?q=" +
+        encodeURIComponent(q);
+
+      return { ok: true };
     }
 
-    case 'goBack': {
-      const ok = await sendToBridge({ cmd: 'go_back' });
-      if (!ok) window.history.back();
-      return { success: true };
+    case "scrollPage": {
+      const dir = args?.direction === "up" ? -1 : 1;
+      const amt = typeof args?.amount === "number" ? args.amount : 800;
+
+      window.scrollBy({
+        top: dir * amt,
+        left: 0,
+        behavior: "smooth",
+      });
+
+      return { ok: true };
     }
 
-    case 'reloadPage': {
-      const ok = await sendToBridge({ cmd: 'reload' });
-      if (!ok) window.location.reload();
-      return { success: true };
-    }
+    case "goBack":
+      window.history.back();
+      return { ok: true };
 
-    case 'typeText': {
-      const text = String(args?.text ?? '');
-      const ok = await sendToBridge({ cmd: 'type', text });
-      if (!ok) {
-        const el = document.activeElement as any;
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-          el.value = text;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      }
-      return { success: true };
-    }
-
-    case 'pressEnter': {
-      const ok = await sendToBridge({ cmd: 'press_enter' });
-      if (!ok) {
-        const el = document.activeElement as HTMLElement | null;
-        if (el) {
-          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
-        }
-      }
-      return { success: true };
-    }
-
-    case 'clickSelector': {
-      const selector = String(args?.selector || '').trim();
-      if (!selector) return { success: false, message: 'Missing selector' };
-      const ok = await sendToBridge({ cmd: 'click', selector });
-      if (!ok) {
-        const el = document.querySelector(selector) as HTMLElement | null;
-        if (el) el.click();
-      }
-      return { success: true };
-    }
+    case "reloadPage":
+      window.location.reload();
+      return { ok: true };
 
     default:
-      return { success: false, message: `Unknown tool: ${toolName}` };
+      console.warn("Unknown tool:", name);
+      return { ok: false };
   }
-};
+}
