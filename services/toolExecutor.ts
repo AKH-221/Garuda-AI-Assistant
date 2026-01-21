@@ -1,83 +1,128 @@
+import { Type } from "@google/genai";
 
-import { FunctionDeclaration, Type } from '@google/genai';
-
-// In a real app, these would interact with the OS. Here, they are mocks.
-const openApplication = (name: string) => ({ success: true, message: `Opened application: ${name}` });
-const searchWeb = (query: string) => ({ success: true, message: `Searching web for: ${query}` });
-const createFolder = (path: string) => ({ success: true, message: `Created folder at: ${path}` });
-const deleteFile = (path: string) => ({ success: true, message: `Deleted file/folder at: ${path}` });
-const typeText = (text: string) => ({ success: true, message: `Typed text: "${text}"`});
-
-const toolHandlers: { [key: string]: (...args: any[]) => any } = {
-  openApplication: ({ name }: { name: string }) => openApplication(name),
-  searchWeb: ({ query }: { query: string }) => searchWeb(query),
-  createFolder: ({ path }: { path: string }) => createFolder(path),
-  deleteFile: ({ path }: { path: string }) => deleteFile(path),
-  typeText: ({ text }: { text: string }) => typeText(text),
-};
-
-export const executeTool = async (toolName: string, args: any) => {
-  console.log(`Executing tool: ${toolName}`, args);
-  if (toolHandlers[toolName]) {
-    return toolHandlers[toolName](args);
-  }
-  return { success: false, message: `Unknown tool: ${toolName}` };
-};
-
-export const toolDeclarations: FunctionDeclaration[] = [
+/**
+ * Tool declarations
+ * These tell Gemini WHAT browser actions it is allowed to call
+ */
+export const toolDeclarations = [
   {
-    name: 'openApplication',
+    name: "openUrl",
+    description: "Open a website in the current browser tab",
     parameters: {
       type: Type.OBJECT,
-      description: 'Opens a specified application on the computer.',
       properties: {
-        name: { type: Type.STRING, description: 'The name of the application to open, e.g., "Chrome", "Spotify", "Terminal".' },
-      },
-      required: ['name'],
-    },
-  },
-  {
-    name: 'searchWeb',
-    parameters: {
-      type: Type.OBJECT,
-      description: 'Performs a web search using the default browser.',
-      properties: {
-        query: { type: Type.STRING, description: 'The search query.' },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'createFolder',
-    parameters: {
-      type: Type.OBJECT,
-      description: 'Creates a new folder at a specified path.',
-      properties: {
-        path: { type: Type.STRING, description: 'The full path where the folder should be created, e.g., "~/Desktop/New Folder".' },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'deleteFile',
-    parameters: {
-      type: Type.OBJECT,
-      description: 'Deletes a file or folder at a specified path. This is a destructive action and requires confirmation.',
-      properties: {
-        path: { type: Type.STRING, description: 'The full path of the file or folder to delete.' },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'typeText',
-    parameters: {
-        type: Type.OBJECT,
-        description: 'Types a given string of text into the currently active input field.',
-        properties: {
-            text: { type: Type.STRING, description: 'The text to be typed.'},
+        url: {
+          type: Type.STRING,
+          description: "Website URL to open",
         },
-        required: ['text'],
-    }
-  }
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "searchGoogle",
+    description: "Search something on Google in the current browser tab",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: {
+          type: Type.STRING,
+          description: "Search query",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "scrollPage",
+    description: "Scroll the current page",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        direction: {
+          type: Type.STRING,
+          enum: ["up", "down"],
+        },
+        amount: {
+          type: Type.NUMBER,
+          description: "Scroll amount in pixels",
+        },
+      },
+      required: ["direction"],
+    },
+  },
+  {
+    name: "goBack",
+    description: "Go back in browser history",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "reloadPage",
+    description: "Reload the current page",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
+
+/**
+ * Tool executor
+ * This actually performs the browser actions
+ */
+export async function executeTool(name: string, args: any) {
+  switch (name) {
+    case "openUrl": {
+      let url = String(args?.url || "").trim();
+      if (!url) return { ok: false, error: "Missing URL" };
+
+      // Auto-fix URL
+      if (!url.startsWith("http")) {
+        url = "https://" + url;
+      }
+
+      window.location.href = url;
+      return { ok: true };
+    }
+
+    case "searchGoogle": {
+      const query = String(args?.query || "").trim();
+      if (!query) return { ok: false, error: "Missing query" };
+
+      window.location.href =
+        "https://www.google.com/search?q=" +
+        encodeURIComponent(query);
+
+      return { ok: true };
+    }
+
+    case "scrollPage": {
+      const direction = args?.direction === "up" ? -1 : 1;
+      const amount =
+        typeof args?.amount === "number" ? args.amount : 800;
+
+      window.scrollBy({
+        top: direction * amount,
+        left: 0,
+        behavior: "smooth",
+      });
+
+      return { ok: true };
+    }
+
+    case "goBack":
+      window.history.back();
+      return { ok: true };
+
+    case "reloadPage":
+      window.location.reload();
+      return { ok: true };
+
+    default:
+      console.warn("Unknown tool:", name, args);
+      return { ok: false, error: "Unknown tool" };
+  }
+}
