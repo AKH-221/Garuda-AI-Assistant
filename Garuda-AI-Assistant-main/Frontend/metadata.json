@@ -1,0 +1,7 @@
+{
+  "name": "JARVIS Voice Assistant",
+  "description": "A voice-controlled desktop assistant that helps you operate your computer safely and efficiently, inspired by JARVIS. It uses Gemini to understand commands, plan actions, and execute them through simulated tool calls.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
