@@ -4,9 +4,6 @@ import type { AppState } from '../types';
 
 type RealtimeBlob = { data: string; mimeType: string };
 
-// -------------------------
-// Audio helpers
-// -------------------------
 function decode(base64: string): Uint8Array {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -43,20 +40,20 @@ async function decodeAudioData(
 function createPcmBlob(data: Float32Array): RealtimeBlob {
   const l = data.length;
   const int16 = new Int16Array(l);
-  for (let i = 0; i < l; i++) int16[i] = data[i] * 32768;
-  return { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
+  for (let i = 0; i < l; i++) {
+    const sample = Math.max(-1, Math.min(1, data[i]));
+    int16[i] = sample < 0 ? sample * 32768 : sample * 32767;
+  }
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
 }
 
-// -------------------------
-// ✅ SYSTEM PROMPT (FULL AUTOMATION)
-// -------------------------
 const SYSTEM_PROMPT = `
 You are "JARVIS", a voice-controlled browser assistant running inside a web application deployed on Vercel.
 
-========================
 GLOBAL STATE CONTROL
-========================
-You maintain an internal state:
 - ACTIVE (default)
 - DEACTIVATED
 
@@ -71,66 +68,31 @@ State commands:
 - "Start Jarvis"
 → Switch state to ACTIVE.
 
-State behavior:
-- When DEACTIVATED:
-  - Do NOT call any tools.
-  - Do NOT execute any browser actions.
-  - Respond only with:
-    "Jarvis is deactivated. Say 'Activate Jarvis' to wake me up."
+When DEACTIVATED:
+- Do NOT call any tools.
+- Do NOT execute any browser actions.
+- Respond only with:
+  "Jarvis is deactivated. Say 'Activate Jarvis' to wake me up."
 
-========================
-CAPABILITIES (ACTIVE MODE)
-========================
-You operate ONLY inside the browser using safe, URL-based actions.
+CAPABILITIES
+You operate inside the browser using safe, URL-based actions.
 
-You CAN:
-- Open ANY website mentioned by the user.
-- Open websites in a NEW TAB when requested.
-- Search for ANY topic, product, song, person, code, or question on the web.
-- Search on specific platforms if named (YouTube, Google, Amazon, Flipkart, GitHub, Stack Overflow, etc.).
-
-You CANNOT:
-- Click buttons or type text inside other websites.
-- Switch, close, or control browser tabs.
-- Control media playback (play, pause, stop).
-- Read prices automatically or interact with shopping carts.
-- Perform login, checkout, or payment actions.
-
-========================
 TOOLS YOU MUST USE
-========================
 - openUrl({ url })
 - openUrlNewTab({ url })
 - searchGoogle({ query, newTab })
 - youtubeSearch({ query, newTab })
 
-========================
-ACTION RULES (MANDATORY)
-========================
-- If the user asks for ANY action, you MUST call a tool.
+ACTION RULES
+- If the user asks for an action, call a tool.
 - Never describe an action without executing it.
-- Never output JSON as plain text.
+- If no platform is specified, default to Google search.
 
-Command mapping:
-- "open <site>" → openUrl or openUrlNewTab
-- "open <site> in new tab" → openUrlNewTab
-- "search <anything>" → searchGoogle
-- "search <song> on youtube" → youtubeSearch
-- "open youtube and search <song>" → youtubeSearch
-- If no platform is specified → default to Google search.
-
-========================
 RESPONSE STYLE
-========================
-- Be concise (1–2 sentences).
+- Be concise.
 - Execute immediately when ACTIVE.
-- Do not explain technical limitations unless the user asks.
 `;
 
-
-// -------------------------
-// Public types
-// -------------------------
 export interface JarvisSession {
   close: () => void;
 }
@@ -144,132 +106,223 @@ interface JarvisCallbacks {
   onError: (error: ErrorEvent | Error) => void;
 }
 
-// -------------------------
-// ✅ Connect to Jarvis (Gemini Live Audio)
-// -------------------------
-export const connectToJarvis = async (callbacks: JarvisCallbacks): Promise<JarvisSession> => {
-  // ✅ Vite client env (MUST start with VITE_)
+export const connectToJarvis = async (
+  callbacks: JarvisCallbacks
+): Promise<JarvisSession> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY in .env.local / Vercel env vars');
 
-  const ai = new GoogleGenAI({ apiKey });
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error(
+      'VITE_GEMINI_API_KEY is missing in your frontend env. Add it in Frontend/.env.local for local use and in Vercel Environment Variables for deployment.'
+    );
+  }
 
-  const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-  const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Microphone access is not supported in this browser.');
+  }
+
+  const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+
+  const inputAudioContext = new (window.AudioContext ||
+    (window as any).webkitAudioContext)({ sampleRate: 16000 });
+  const outputAudioContext = new (window.AudioContext ||
+    (window as any).webkitAudioContext)({ sampleRate: 24000 });
+
+  if (inputAudioContext.state === 'suspended') {
+    await inputAudioContext.resume();
+  }
+  if (outputAudioContext.state === 'suspended') {
+    await outputAudioContext.resume();
+  }
 
   const sources = new Set<AudioBufferSourceNode>();
   let nextStartTime = 0;
+  let stream: MediaStream | null = null;
+  let scriptProcessor: ScriptProcessorNode | null = null;
+  let inputSourceNode: MediaStreamAudioSourceNode | null = null;
+  let closed = false;
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  callbacks.onStateChange('LISTENING');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    callbacks.onStateChange('LISTENING');
 
-  const sessionPromise = ai.live.connect({
-    model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
-      systemInstruction: SYSTEM_PROMPT,
-      tools: [{ functionDeclarations: toolDeclarations as any }],
-    },
-    callbacks: {
-      onopen: () => {
-        const source = inputAudioContext.createMediaStreamSource(stream);
-        const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
-
-        scriptProcessor.onaudioprocess = (event) => {
-          const inputData = event.inputBuffer.getChannelData(0);
-          const pcmBlob = createPcmBlob(inputData);
-          sessionPromise.then((session) => session.sendRealtimeInput({ media: pcmBlob as any }));
-        };
-
-        source.connect(scriptProcessor);
-
-        // keep audio pipeline alive without feedback
-        const gainNode = inputAudioContext.createGain();
-        gainNode.gain.setValueAtTime(0, inputAudioContext.currentTime);
-        scriptProcessor.connect(gainNode);
-        gainNode.connect(inputAudioContext.destination);
+    const sessionPromise = ai.live.connect({
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+          },
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        systemInstruction: SYSTEM_PROMPT,
+        tools: [{ functionDeclarations: toolDeclarations as any }],
       },
+      callbacks: {
+        onopen: () => {
+          if (!stream) return;
 
-      onmessage: async (message: LiveServerMessage) => {
-        // user transcript
-        if (message.serverContent?.inputTranscription) {
-          callbacks.onUserTranscription(message.serverContent.inputTranscription.text);
-        }
+          inputSourceNode = inputAudioContext.createMediaStreamSource(stream);
+          scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
 
-        // jarvis transcript
-        if (message.serverContent?.outputTranscription) {
-          callbacks.onJarvisTranscription(message.serverContent.outputTranscription.text);
-        }
+          scriptProcessor.onaudioprocess = (event) => {
+            if (closed) return;
 
-        // audio output
-        const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-        if (audioData) {
-          callbacks.onStateChange('SPEAKING');
-          nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
+            const inputData = event.inputBuffer.getChannelData(0);
+            const pcmBlob = createPcmBlob(inputData);
 
-          const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
-          const src = outputAudioContext.createBufferSource();
-          src.buffer = audioBuffer;
-          src.connect(outputAudioContext.destination);
+            sessionPromise
+              .then((session) => {
+                if (!closed) {
+                  session.sendRealtimeInput({ media: pcmBlob as any });
+                }
+              })
+              .catch((err) => callbacks.onError(err instanceof Error ? err : new Error(String(err))));
+          };
 
-          src.addEventListener('ended', () => {
-            sources.delete(src);
-            if (sources.size === 0) callbacks.onStateChange('LISTENING');
-          });
+          inputSourceNode.connect(scriptProcessor);
 
-          src.start(nextStartTime);
-          nextStartTime += audioBuffer.duration;
-          sources.add(src);
-        }
+          const silentGain = inputAudioContext.createGain();
+          silentGain.gain.setValueAtTime(0, inputAudioContext.currentTime);
+          scriptProcessor.connect(silentGain);
+          silentGain.connect(inputAudioContext.destination);
+        },
 
-        // tool calls
-        if (message.toolCall?.functionCalls) {
-          callbacks.onStateChange('THINKING');
-
-          for (const fc of message.toolCall.functionCalls) {
-            callbacks.onToolCall(fc.name, fc.args);
-
-            const result = await executeTool(fc.name, fc.args);
-
-            const session = await sessionPromise;
-            session.sendToolResponse({
-              functionResponses: {
-                id: fc.id,
-                name: fc.name,
-                response: { result: JSON.stringify(result) },
-              },
-            });
+        onmessage: async (message: LiveServerMessage) => {
+          if (message.serverContent?.inputTranscription?.text) {
+            callbacks.onUserTranscription(message.serverContent.inputTranscription.text);
           }
-        }
 
-        if (message.serverContent?.turnComplete) callbacks.onTurnComplete();
+          if (message.serverContent?.outputTranscription?.text) {
+            callbacks.onJarvisTranscription(message.serverContent.outputTranscription.text);
+          }
 
-        if (message.serverContent?.interrupted) {
-          for (const s of sources.values()) {
-            s.stop();
+          const audioData =
+            message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+
+          if (audioData) {
+            callbacks.onStateChange('SPEAKING');
+            nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
+
+            const audioBuffer = await decodeAudioData(
+              decode(audioData),
+              outputAudioContext,
+              24000,
+              1
+            );
+
+            const src = outputAudioContext.createBufferSource();
+            src.buffer = audioBuffer;
+            src.connect(outputAudioContext.destination);
+
+            src.addEventListener('ended', () => {
+              sources.delete(src);
+              if (sources.size === 0 && !closed) {
+                callbacks.onStateChange('LISTENING');
+              }
+            });
+
+            src.start(nextStartTime);
+            nextStartTime += audioBuffer.duration;
+            sources.add(src);
+          }
+
+          if (message.toolCall?.functionCalls?.length) {
+            callbacks.onStateChange('THINKING');
+
+            for (const fc of message.toolCall.functionCalls) {
+              callbacks.onToolCall(fc.name, fc.args);
+
+              const result = await executeTool(fc.name, fc.args);
+              const session = await sessionPromise;
+
+              session.sendToolResponse({
+                functionResponses: [
+                  {
+                    id: fc.id,
+                    name: fc.name,
+                    response: { result: JSON.stringify(result) },
+                  },
+                ],
+              });
+            }
+          }
+
+          if (message.serverContent?.turnComplete) {
+            callbacks.onTurnComplete();
+          }
+
+          if (message.serverContent?.interrupted) {
+            for (const s of Array.from(sources)) {
+              s.stop();
+              sources.delete(s);
+            }
+            nextStartTime = 0;
+            callbacks.onStateChange('LISTENING');
+          }
+        },
+
+        onerror: (e: ErrorEvent) => {
+          callbacks.onError(e);
+        },
+
+        onclose: async () => {
+          closed = true;
+
+          for (const s of Array.from(sources)) {
+            try {
+              s.stop();
+            } catch {}
             sources.delete(s);
           }
-          nextStartTime = 0;
-          callbacks.onStateChange('LISTENING');
-        }
+
+          stream?.getTracks().forEach((t) => t.stop());
+
+          try {
+            scriptProcessor?.disconnect();
+          } catch {}
+
+          try {
+            inputSourceNode?.disconnect();
+          } catch {}
+
+          if (inputAudioContext.state !== 'closed') {
+            await inputAudioContext.close();
+          }
+          if (outputAudioContext.state !== 'closed') {
+            await outputAudioContext.close();
+          }
+        },
       },
+    });
 
-      onerror: (e: ErrorEvent) => callbacks.onError(e),
+    const session = await sessionPromise;
 
-      onclose: async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        if (inputAudioContext.state !== 'closed') await inputAudioContext.close();
-        if (outputAudioContext.state !== 'closed') await outputAudioContext.close();
+    return {
+      close: () => {
+        closed = true;
+        session.close();
       },
-    },
-  });
+    };
+  } catch (error) {
+    closed = true;
 
-  const session = await sessionPromise;
+    stream?.getTracks().forEach((t) => t.stop());
 
-  return {
-    close: () => session.close(),
-  };
+    try {
+      if (inputAudioContext.state !== 'closed') {
+        await inputAudioContext.close();
+      }
+    } catch {}
+
+    try {
+      if (outputAudioContext.state !== 'closed') {
+        await outputAudioContext.close();
+      }
+    } catch {}
+
+    throw error instanceof Error ? error : new Error(String(error));
+  }
 };
