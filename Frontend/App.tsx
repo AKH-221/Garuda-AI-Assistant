@@ -7,6 +7,7 @@ import { Visualizer } from './components/Visualizer';
 import { TranscriptionLog } from './components/TranscriptionLog';
 import { ToolCallLog } from './components/ToolCallLog';
 import { ChatInput } from './components/ChatInput';
+import { Analytics } from '@vercel/analytics/react';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('IDLE');
@@ -133,6 +134,7 @@ const App: React.FC = () => {
           <p>All actions are executed locally for security.</p>
         </footer>
       </div>
+      <Analytics />
     </div>
   );
 };
