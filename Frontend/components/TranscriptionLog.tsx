@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect } from 'react';
 import type { Message } from '../types';
 
@@ -25,7 +24,8 @@ export const TranscriptionLog: React.FC<TranscriptionLogProps> = ({ messages }) 
             {messages.map((msg, index) => (
             <div key={index} className={`mb-3 last:mb-0 ${msg.author === 'user' ? 'text-right' : 'text-left'}`}>
                 <div className={`inline-block p-2 rounded-lg max-w-xs md:max-w-sm ${msg.author === 'user' ? 'bg-blue-800 bg-opacity-50' : 'bg-gray-700 bg-opacity-50'}`}>
-                    <p className="font-bold text-sm capitalize mb-1 ${msg.author === 'user' ? 'text-blue-300' : 'text-gray-300'}">
+                    {/* ✅ FIXED LINE */}
+                    <p className={`font-bold text-sm capitalize mb-1 ${msg.author === 'user' ? 'text-blue-300' : 'text-gray-300'}`}>
                         {msg.author}
                     </p>
                     <p className="text-white text-sm">{msg.text}</p>
